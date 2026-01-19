@@ -14,6 +14,7 @@ from accelerate.utils import set_seed
 set_seed(0)
 
 import time
+from datetime import datetime
 
 import shortuuid
 from fastchat.llm_judge.common import load_questions
@@ -221,8 +222,15 @@ def get_model_answers(
     print('Warmup done')
 
     # questions=questions[6:]
-    for question in tqdm(questions):
+    total_questions = len(questions)
+    print(f"\n{'='*80}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting data collection on {total_questions} questions")
+    print(f"{'='*80}\n")
+    
+    for question_idx, question in enumerate(tqdm(questions), 1):
 
+        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing Question {question_idx}/{total_questions} (ID: {question['question_id']})")
+        
         choices = []
         for i in range(num_choices):
             torch.manual_seed(i)
@@ -235,6 +243,7 @@ def get_model_answers(
             new_tokens = []
             wall_time = []
             for j in range(len(question["turns"])):
+                print(f"  Turn {j+1}/{len(question['turns'])}: ", end='', flush=True)
                 qs = question["turns"][j]
                 messages.append({
                     "role": "user",
@@ -265,6 +274,10 @@ def get_model_answers(
                 )
                 torch.cuda.synchronize()
                 total_time = time.time() - start_time
+                
+                # Log progress metrics
+                print(f"✓ Generated {new_token} tokens in {total_time:.2f}s ({idx} cycles, {new_token/total_time:.1f} tok/s)")
+                
                 output_ids = output_ids[0][len(input_ids[0]):]
                 # be consistent with the template's stop_token_ids
                 stop_token_ids = [
@@ -319,6 +332,10 @@ def get_model_answers(
             }
             fout.write(json.dumps(ans_json) + "\n")
 
+    print(f"\n{'='*80}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Completed all {total_questions} questions")
+    print(f"{'='*80}\n")
+    
     if collector is not None:
         collector.save({"model_id": model_id, "bench": args.bench_name})
 
