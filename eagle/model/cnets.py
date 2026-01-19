@@ -667,7 +667,7 @@ class Model(nn.Module):
         self.stable_kv = None
 
     @torch.no_grad()
-    def topK_genrate(self, hidden_states, input_ids, head, logits_processor):
+    def topK_genrate(self, hidden_states, input_ids, head, logits_processor, return_debug: bool = False):
 
         input_ids = input_ids.to(hidden_states.device)
         total_tokens = self.total_tokens
@@ -679,6 +679,7 @@ class Model(nn.Module):
         scores_list = []
         parents_list = []
         ss_token = []
+        debug_payload = {"scores_list": [], "parents_list": [], "ss_token": []} if return_debug else None
 
         input_ids = input_ids[:, 1:]
         input_ids = input_ids.to(hidden_states.device)
@@ -705,6 +706,10 @@ class Model(nn.Module):
         scores = topk_p[0]
         scores_list.append(scores[None])
         parents_list.append(torch.zeros(1, dtype=torch.long, device=scores.device))
+        if return_debug:
+            debug_payload["scores_list"].append(scores.detach().cpu())
+            debug_payload["parents_list"].append(torch.zeros(1, dtype=torch.long, device="cpu"))
+            debug_payload["ss_token"].append(topk_index.detach().cpu())
         if self.config.vocab_size==self.config.draft_vocab_size:
             ss_token.append(topk_index)
             input_ids = topk_index
@@ -755,6 +760,11 @@ class Model(nn.Module):
                 ss_token.append(topk_index+self.d2t[topk_index])
             scores_list.append(cu_scores)
             tree_mask = torch.cat((tree_mask[:, :, out_ids], self.tree_mask_init), dim=3)
+
+            if return_debug:
+                debug_payload["scores_list"].append(cu_scores.detach().cpu())
+                debug_payload["parents_list"].append(parents.detach().cpu())
+                debug_payload["ss_token"].append(topk_index.detach().cpu())
 
 
         scores_list = torch.cat(scores_list, dim=0).view(-1)
@@ -823,6 +833,11 @@ class Model(nn.Module):
         retrieve_indices = torch.tensor(retrieve_indices, dtype=torch.long)
         del mask_index, mask_index_list, noleaf_index, noleaf_num, leaf_num, max_depth, rid
         tree_position_ids = tree_position_ids.to(hidden_states.device)
+
+        if return_debug:
+            debug_payload["retrieve_indices"] = retrieve_indices.detach().cpu()
+            debug_payload["tree_position_ids"] = tree_position_ids.detach().cpu()
+            return draft_tokens, retrieve_indices, tree_mask, tree_position_ids, debug_payload
 
         return draft_tokens, retrieve_indices, tree_mask, tree_position_ids
 

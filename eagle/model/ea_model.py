@@ -206,8 +206,13 @@ class EaModel(nn.Module):
             max_length=2048,
             log=False,
             is_llama3=False,
+            data_collector=None,
+            collector_prompt_id=None,
+            collector_prompt_text: str = "",
+            collector_source: str = "mt-bench",
+            collector_mode: str = None,
 
-    ):
+        ):
         if is_llama3:
             stop_token_id = self.tokenizer.convert_tokens_to_ids("<|eot_id|>")
 
@@ -222,6 +227,14 @@ class EaModel(nn.Module):
         padding = (torch.zeros(1, 1, dtype=torch.long) - 1).to(input_ids.device)
         input_ids = input_ids.clone()
         self.ea_layer.reset_kv()
+
+        want_collect = data_collector is not None
+        resolved_collector_mode = collector_mode or (data_collector.mode if want_collect and hasattr(data_collector, "mode") else None)
+        return_debug = bool(want_collect and resolved_collector_mode == "full")
+        prompt_id = collector_prompt_id if collector_prompt_id is not None else 0
+        if want_collect:
+            data_collector.add_prompt(prompt_id, collector_prompt_text or "", input_ids.shape[1], collector_source)
+            from data_collection.feature_extractor import extract_node_features, extract_node_labels
 
         # Initialize the past key and value states
         if hasattr(self, "past_key_values"):
@@ -243,14 +256,24 @@ class EaModel(nn.Module):
         input_len = input_ids.shape[1]
         reset_tree_mode(self)
         # prefill
-        draft_tokens, retrieve_indices, tree_mask, tree_position_ids, logits, hidden_state, sample_token = initialize_tree(
-            input_ids, self, past_key_values, logits_processor
+        init_tree = initialize_tree(
+            input_ids, self, past_key_values, logits_processor, return_debug=return_debug
         )
+        if return_debug:
+            draft_tokens, retrieve_indices, tree_mask, tree_position_ids, logits, hidden_state, sample_token, debug_info = init_tree
+        else:
+            draft_tokens, retrieve_indices, tree_mask, tree_position_ids, logits, hidden_state, sample_token = init_tree
+            debug_info = None
         new_token = 0
         max_length = max_length - self.ea_layer.total_tokens - 10
         for idx in range(max_length):
             # with Timer("all"):
             self.base_model.model.tree_mask = tree_mask
+
+            if want_collect:
+                cycle_id = data_collector.start_cycle(prompt_id, idx)
+            else:
+                cycle_id = None
 
             draft_tokens = draft_tokens.to(input_ids.device)
             # Target model forward, get logits
@@ -271,8 +294,30 @@ class EaModel(nn.Module):
                 logits, candidates, logits_processor
             )
             # print(accept_length)
+            # Collect features/labels before the tree is updated
+            if want_collect:
+                best_candidate_val = int(best_candidate.item()) if torch.is_tensor(best_candidate) else int(best_candidate)
+                accept_length_val = int(accept_length.item()) if torch.is_tensor(accept_length) else int(accept_length)
+
+                node_features = extract_node_features(draft_tokens, retrieve_indices, tree_position_ids, debug_info)
+                node_labels = extract_node_labels(draft_tokens, retrieve_indices, best_candidate_val, accept_length_val)
+
+                data_collector.add_nodes(cycle_id, node_features, node_labels)
+                data_collector.finalize_cycle(cycle_id, accept_length_val, best_candidate_val)
+
+                if resolved_collector_mode == "full":
+                    data_collector.log_full_cycle(
+                        cycle_id,
+                        draft_tokens,
+                        retrieve_indices,
+                        tree_mask,
+                        tree_position_ids,
+                        sample_p,
+                        debug_info,
+                    )
+
             # Adjusting the input sequence, draft model forward
-            input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, hidden_state, sample_token = update_inference_inputs(
+            updated = update_inference_inputs(
                 input_ids,
                 candidates,
                 best_candidate,
@@ -284,8 +329,14 @@ class EaModel(nn.Module):
                 current_length_data,
                 self,
                 hidden_state_new,
-                sample_p
+                sample_p,
+                return_debug=return_debug,
             )
+            if return_debug:
+                input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, hidden_state, sample_token, debug_info = updated
+            else:
+                input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, hidden_state, sample_token = updated
+                debug_info = None
 
             if is_llama3:
                 if stop_token_id in input_ids[0, input_len:].tolist():

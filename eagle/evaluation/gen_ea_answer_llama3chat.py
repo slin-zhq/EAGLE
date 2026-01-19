@@ -6,6 +6,7 @@ python3 gen_model_answer.py --model-path lmsys/fastchat-t5-3b-v1.0 --model-id fa
 import argparse
 import json
 import os
+from pathlib import Path
 script_dir = os.path.dirname(__file__)
 parent_dir = os.path.dirname(script_dir)
 # os.environ["CUDA_VISIBLE_DEVICES"] = "7"
@@ -117,6 +118,13 @@ def get_model_answers(
 
     tokenizer = model.get_tokenizer()
 
+    collector = None
+    if getattr(args, "collect_data", False):
+        from data_collection.collector import DataCollector
+
+        output_dir = Path(args.data_output_dir).expanduser().resolve()
+        collector = DataCollector(output_dir=str(output_dir), mode=getattr(args, "collector_mode", "phase0"))
+
     if temperature > 1e-5:
         logits_processor = prepare_logits_processor(temperature=temperature)
     else:
@@ -164,6 +172,7 @@ def get_model_answers(
                 temperature=temperature,
                 log=True,
                 is_llama3=True,
+                data_collector=None,
             )
             torch.cuda.synchronize()
             total_time = time.time() - start_time
@@ -246,6 +255,11 @@ def get_model_answers(
                     temperature=temperature,
                     log=True,
                     is_llama3=True,
+                    data_collector=collector,
+                    collector_prompt_id=question["question_id"],
+                    collector_prompt_text=qs,
+                    collector_source=args.bench_name,
+                    collector_mode=getattr(args, "collector_mode", "phase0"),
                 )
                 torch.cuda.synchronize()
                 total_time = time.time() - start_time
@@ -302,6 +316,9 @@ def get_model_answers(
                 "tstamp": time.time(),
             }
             fout.write(json.dumps(ans_json) + "\n")
+
+    if collector is not None:
+        collector.save({"model_id": model_id, "bench": args.bench_name})
 
 
 def reorg_answer_file(answer_file):
@@ -398,6 +415,12 @@ if __name__ == "__main__":
         type=float,
         default=0.0,
     )
+
+    parser.add_argument("--collect-data", action="store_true", help="Enable data collection")
+    parser.add_argument("--collector-mode", choices=["phase0", "full"], default="phase0",
+                        help="Collection mode: phase0 (minimal) or full (log all outputs)")
+    parser.add_argument("--data-output-dir", type=str, default="datasets/phase0_v1",
+                        help="Directory to write collected data")
 
     parser.add_argument(
         "--tree-choices",

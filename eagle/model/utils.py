@@ -229,7 +229,7 @@ def initialize_tree0(input_ids, model, past_key_values, logits_processor):
     #     return draft_tokens, retrieve_indices,tree_mask,tree_position_ids, hidden_states, token
     return draft_tokens, retrieve_indices,tree_mask,tree_position_ids, logits, hidden_state, sample_token
 
-def initialize_tree(input_ids, model, past_key_values, logits_processor):
+def initialize_tree(input_ids, model, past_key_values, logits_processor, return_debug: bool = False):
     outputs, orig, hidden_states = model(
         input_ids, past_key_values=past_key_values, output_orig=True
     )
@@ -250,8 +250,16 @@ def initialize_tree(input_ids, model, past_key_values, logits_processor):
         if outputs["hidden_states"][0].device != ea_device:
             outputs["hidden_states"] = [x.to(ea_device) for x in outputs["hidden_states"]]
         hidden_states=torch.cat(outputs["hidden_states"],dim=-1)
-    draft_tokens, retrieve_indices,tree_mask,tree_position_ids = model.ea_layer.topK_genrate(hidden_states, input_ids, model.base_model.lm_head,logits_processor)
-    return draft_tokens, retrieve_indices,tree_mask,tree_position_ids, orig, hidden_states, token
+    if return_debug:
+        draft_tokens, retrieve_indices, tree_mask, tree_position_ids, debug_info = model.ea_layer.topK_genrate(
+            hidden_states, input_ids, model.base_model.lm_head, logits_processor, return_debug=True
+        )
+        return draft_tokens, retrieve_indices, tree_mask, tree_position_ids, orig, hidden_states, token, debug_info
+
+    draft_tokens, retrieve_indices, tree_mask, tree_position_ids = model.ea_layer.topK_genrate(
+        hidden_states, input_ids, model.base_model.lm_head, logits_processor
+    )
+    return draft_tokens, retrieve_indices, tree_mask, tree_position_ids, orig, hidden_states, token
 
 
 def reset_tree_mode(
@@ -417,18 +425,19 @@ def evaluate_posterior(
 
 @torch.no_grad()
 def update_inference_inputs(
-        input_ids,
-        candidates,
-        best_candidate,
-        accept_length,
-        retrieve_indices,
-        logits_processor,
-        new_token,
-        past_key_values_data_list,
-        current_length_data,
-        model,
-        hidden_state_new,
-        sample_p
+    input_ids,
+    candidates,
+    best_candidate,
+    accept_length,
+    retrieve_indices,
+    logits_processor,
+    new_token,
+    past_key_values_data_list,
+    current_length_data,
+    model,
+    hidden_state_new,
+    sample_p,
+    return_debug: bool = False
 ):
     prev_input_len = input_ids.shape[1]
     # Map the best candidate indices to the original indices in the sequence
@@ -463,14 +472,29 @@ def update_inference_inputs(
         token = torch.argmax(prob)
         token = token[None, None]
     # hidden_state = torch.cat((hidden_state, accept_hidden_state_new), dim=1)
-    draft_tokens, retrieve_indices,tree_mask,tree_position_ids = model.ea_layer.topK_genrate(accept_hidden_state_new,
-                                              input_ids=torch.cat((input_ids, token.to(input_ids.device)), dim=1),
-                                              head=model.base_model.lm_head,logits_processor=logits_processor)
+    if return_debug:
+        draft_tokens, retrieve_indices, tree_mask, tree_position_ids, debug_info = model.ea_layer.topK_genrate(
+            accept_hidden_state_new,
+            input_ids=torch.cat((input_ids, token.to(input_ids.device)), dim=1),
+            head=model.base_model.lm_head,
+            logits_processor=logits_processor,
+            return_debug=True,
+        )
+    else:
+        draft_tokens, retrieve_indices, tree_mask, tree_position_ids = model.ea_layer.topK_genrate(
+            accept_hidden_state_new,
+            input_ids=torch.cat((input_ids, token.to(input_ids.device)), dim=1),
+            head=model.base_model.lm_head,
+            logits_processor=logits_processor,
+        )
 
 
     new_token += accept_length + 1
 
-    return input_ids, draft_tokens, retrieve_indices,tree_mask,tree_position_ids, new_token, None, token
+    if return_debug:
+        return input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, None, token, debug_info
+
+    return input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, None, token
 
 
 if __name__ == "__main__":
