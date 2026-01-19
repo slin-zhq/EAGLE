@@ -20,7 +20,8 @@ def extract_node_features(
 ) -> List[Dict]:
     tokens = _flatten_tokens(draft_tokens)
     depths = tree_position_ids.detach().cpu().view(-1).tolist()
-    num_nodes = len(tokens)
+    num_nodes = min(len(tokens), len(depths))
+    tokens = tokens[:num_nodes]
 
     # Placeholder sibling ranks until deeper instrumentation is added.
     sibling_ranks = [0] * num_nodes
