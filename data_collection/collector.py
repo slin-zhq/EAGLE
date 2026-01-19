@@ -37,24 +37,33 @@ class DataCollector:
             self.full_payload_dir.mkdir(parents=True, exist_ok=True)
 
     # Prompt-level
-    def add_prompt(self, prompt_id: int, prompt_text: str, prompt_len: int, source: str = "mt-bench") -> None:
+    def add_prompt(
+        self,
+        prompt_id: int,
+        prompt_text: str,
+        prompt_len: int,
+        source: str = "mt-bench",
+        turn_idx: Optional[int] = None,
+    ) -> None:
         self.prompts.append(
             {
                 "prompt_id": prompt_id,
                 "prompt_text": prompt_text,
                 "prompt_len": prompt_len,
                 "source": source,
+                "turn_idx": turn_idx,
             }
         )
 
     # Cycle-level
-    def start_cycle(self, prompt_id: int, cycle_idx: int) -> int:
+    def start_cycle(self, prompt_id: int, cycle_idx: int, turn_idx: Optional[int] = None) -> int:
         cycle_id = self.cycle_counter
         self.cycles.append(
             {
                 "cycle_id": cycle_id,
                 "prompt_id": prompt_id,
                 "cycle_idx": cycle_idx,
+                "turn_idx": turn_idx,
                 # Labels set in finalize_cycle
                 "accepted_length": -1,
                 "best_path_idx": -1,

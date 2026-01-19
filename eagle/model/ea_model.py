@@ -211,6 +211,7 @@ class EaModel(nn.Module):
             collector_prompt_text: str = "",
             collector_source: str = "mt-bench",
             collector_mode: str = None,
+            collector_turn_idx: int = None,
 
         ):
         if is_llama3:
@@ -233,7 +234,13 @@ class EaModel(nn.Module):
         return_debug = bool(want_collect and resolved_collector_mode == "full")
         prompt_id = collector_prompt_id if collector_prompt_id is not None else 0
         if want_collect:
-            data_collector.add_prompt(prompt_id, collector_prompt_text or "", input_ids.shape[1], collector_source)
+            data_collector.add_prompt(
+                prompt_id,
+                collector_prompt_text or "",
+                input_ids.shape[1],
+                collector_source,
+                collector_turn_idx,
+            )
             from data_collection.feature_extractor import extract_node_features, extract_node_labels
 
         # Initialize the past key and value states
@@ -271,7 +278,7 @@ class EaModel(nn.Module):
             self.base_model.model.tree_mask = tree_mask
 
             if want_collect:
-                cycle_id = data_collector.start_cycle(prompt_id, idx)
+                cycle_id = data_collector.start_cycle(prompt_id, idx, collector_turn_idx)
             else:
                 cycle_id = None
 

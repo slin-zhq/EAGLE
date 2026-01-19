@@ -173,6 +173,7 @@ def get_model_answers(
                 log=True,
                 is_llama3=True,
                 data_collector=None,
+                    collector_turn_idx=j,
             )
             torch.cuda.synchronize()
             total_time = time.time() - start_time
@@ -260,6 +261,7 @@ def get_model_answers(
                     collector_prompt_text=qs,
                     collector_source=args.bench_name,
                     collector_mode=getattr(args, "collector_mode", "phase0"),
+                    collector_turn_idx=j,
                 )
                 torch.cuda.synchronize()
                 total_time = time.time() - start_time
