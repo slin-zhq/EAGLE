@@ -7,6 +7,7 @@ Supports two modes:
 from __future__ import annotations
 
 import json
+import importlib
 from pathlib import Path
 from typing import Dict, List, Optional, Literal
 
@@ -21,6 +22,17 @@ class DataCollector:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.mode: CollectorMode = mode
+
+        self.parquet_engine: Optional[str] = None
+        for engine in ("pyarrow", "fastparquet"):
+            try:
+                importlib.import_module(engine)
+                self.parquet_engine = engine
+                break
+            except ImportError:
+                continue
+        if self.parquet_engine is None:
+            print("[DataCollector] No parquet engine found; falling back to CSV outputs.")
 
         # Buffers
         self.prompts: List[Dict] = []
@@ -129,16 +141,28 @@ class DataCollector:
         torch.save(payload, self.full_payload_dir / f"cycle_{cycle_id:06d}.pt")
 
     # Flush to disk
-    def save(self, metadata: Optional[Dict] = None) -> None:
-        print(f"[DataCollector] Saving dataset to {self.output_dir}")
+    def _write_table(self, df: pd.DataFrame, name: str) -> None:
+        suffix = ".parquet" if self.parquet_engine else ".csv"
+        path = self.output_dir / f"{name}{suffix}"
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+
+        if self.parquet_engine:
+            df.to_parquet(tmp_path, index=False, engine=self.parquet_engine)
+        else:
+            df.to_csv(tmp_path, index=False)
+
+        tmp_path.replace(path)
+
+    def save(self, metadata: Optional[Dict] = None, partial: bool = False) -> None:
+        print(f"[DataCollector] Saving dataset to {self.output_dir} (partial={partial})")
 
         df_prompts = pd.DataFrame(self.prompts)
         df_cycles = pd.DataFrame(self.cycles)
         df_nodes = pd.DataFrame(self.nodes)
 
-        df_prompts.to_parquet(self.output_dir / "prompts.parquet", index=False)
-        df_cycles.to_parquet(self.output_dir / "cycles.parquet", index=False)
-        df_nodes.to_parquet(self.output_dir / "nodes.parquet", index=False)
+        self._write_table(df_prompts, "prompts")
+        self._write_table(df_cycles, "cycles")
+        self._write_table(df_nodes, "nodes")
 
         meta = metadata.copy() if metadata is not None else {}
         meta.update(
@@ -147,11 +171,16 @@ class DataCollector:
                 "num_prompts": len(self.prompts),
                 "num_cycles": len(self.cycles),
                 "num_nodes": len(self.nodes),
+                "parquet_engine": self.parquet_engine,
+                "partial": partial,
             }
         )
 
-        with open(self.output_dir / "metadata.json", "w", encoding="utf-8") as f:
+        meta_path = self.output_dir / "metadata.json"
+        meta_tmp = meta_path.with_suffix(meta_path.suffix + ".tmp")
+        with open(meta_tmp, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+        meta_tmp.replace(meta_path)
 
         print(
             f"[DataCollector] Saved {len(self.prompts)} prompts, {len(self.cycles)} cycles, {len(self.nodes)} nodes"

@@ -26,8 +26,25 @@ def extract_node_features(
     # Placeholder sibling ranks until deeper instrumentation is added.
     sibling_ranks = [0] * num_nodes
 
-    # Placeholder draft probabilities; full mode stores raw tensors separately.
+    # Populate draft probabilities when debug payload is available; fallback to zeros.
     draft_probs = [0.0] * num_nodes
+    if debug_info is not None and "scores_list" in debug_info:
+        try:
+            scores_list = [t.detach().cpu() for t in debug_info["scores_list"]]
+            scores_flat = torch.cat(scores_list, dim=0).view(-1)
+
+            total_tokens = max(0, num_nodes - 1)  # exclude root node
+            if total_tokens > 0:
+                top_scores = torch.topk(scores_flat, total_tokens, dim=-1)
+                sorted_idx = torch.sort(top_scores.indices).values
+                selected = scores_flat[sorted_idx].exp().tolist()
+
+                # Root token probability is undefined; set to 1.0 for convenience.
+                draft_probs = [1.0] + selected
+                draft_probs = draft_probs[:num_nodes]
+        except Exception:
+            # Leave draft_probs as zeros if reconstruction fails
+            pass
 
     features: List[Dict] = []
     for idx in range(num_nodes):
@@ -56,9 +73,9 @@ def extract_node_labels(
         return labels
 
     winning_path = retrieve_indices[best_candidate]
-    # Align with update_inference_inputs: accept_length tokens + root
-    max_depth = min(accept_length + 1, winning_path.shape[0])
-    for depth in range(max_depth):
+    # Align with update_inference_inputs: accept_length counts accepted tokens (exclude root)
+    max_depth = min(accept_length, winning_path.shape[0] - 1)
+    for depth in range(1, max_depth + 1):
         node_idx = int(winning_path[depth].item())
         if 0 <= node_idx < num_nodes:
             labels[node_idx] = True

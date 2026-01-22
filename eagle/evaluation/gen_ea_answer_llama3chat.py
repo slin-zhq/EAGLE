@@ -123,7 +123,11 @@ def get_model_answers(
     if getattr(args, "collect_data", False):
         from data_collection.collector import DataCollector
 
-        output_dir = Path(args.data_output_dir).expanduser().resolve()
+        # Anchor relative paths to the repo root (one level above EAGLE_forked) so
+        # container runs land beside EAGLE_forked, not inside it.
+        repo_root = Path(__file__).resolve().parents[3]
+        data_dir = Path(args.data_output_dir).expanduser()
+        output_dir = data_dir if data_dir.is_absolute() else repo_root / data_dir
         collector = DataCollector(output_dir=str(output_dir), mode=getattr(args, "collector_mode", "phase0"))
 
     if temperature > 1e-5:
@@ -332,12 +336,18 @@ def get_model_answers(
             }
             fout.write(json.dumps(ans_json) + "\n")
 
+        if collector is not None:
+            collector.save(
+                {"model_id": model_id, "bench": args.bench_name, "progress": f"{question_idx}/{total_questions}"},
+                partial=True,
+            )
+
     print(f"\n{'='*80}")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Completed all {total_questions} questions")
     print(f"{'='*80}\n")
     
     if collector is not None:
-        collector.save({"model_id": model_id, "bench": args.bench_name})
+        collector.save({"model_id": model_id, "bench": args.bench_name}, partial=False)
 
 
 def reorg_answer_file(answer_file):

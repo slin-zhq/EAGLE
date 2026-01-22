@@ -707,7 +707,7 @@ class Model(nn.Module):
         scores_list.append(scores[None])
         parents_list.append(torch.zeros(1, dtype=torch.long, device=scores.device))
         if return_debug:
-            debug_payload["scores_list"].append(scores.detach().cpu())
+            debug_payload["scores_list"].append(scores[None].detach().cpu())
             debug_payload["parents_list"].append(torch.zeros(1, dtype=torch.long, device="cpu"))
             debug_payload["ss_token"].append(topk_index.detach().cpu())
         if self.config.vocab_size==self.config.draft_vocab_size:
