@@ -206,6 +206,7 @@ class EaModel(nn.Module):
             max_length=2048,
             log=False,
             is_llama3=False,
+            data_collector=None,
 
     ):
         if is_llama3:
@@ -249,6 +250,10 @@ class EaModel(nn.Module):
         new_token = 0
         max_length = max_length - self.ea_layer.total_tokens - 10
         for idx in range(max_length):
+            # Start new cycle for data collection
+            if data_collector is not None:
+                data_collector.start_cycle()
+            
             # with Timer("all"):
             self.base_model.model.tree_mask = tree_mask
 
@@ -266,10 +271,35 @@ class EaModel(nn.Module):
             # logits = logits[0, retrieve_indices]
             draft_tokens = torch.cat((draft_tokens, padding), dim=1)
             candidates = draft_tokens[0, retrieve_indices]
+            
+            # Collect draft outputs
+            if data_collector is not None:
+                data_collector.collect_draft_outputs(
+                    draft_tokens=draft_tokens[0],  # Remove batch dim
+                    retrieve_indices=retrieve_indices,
+                    tree_mask=tree_mask,
+                    tree_position_ids=tree_position_ids,
+                )
+                # Pass full logits tensor - collector will extract what it needs
+                data_collector.collect_verification_inputs(
+                    logits=logits[0],  # Full logits for all positions (remove batch dim)
+                    candidates=candidates,
+                )
+            
             # verification
             best_candidate, accept_length, sample_p = evaluate_posterior(
                 logits, candidates, logits_processor
             )
+            
+            # Collect verification outputs
+            if data_collector is not None:
+                data_collector.collect_verification_outputs(
+                    best_candidate=best_candidate,
+                    accept_length=accept_length,
+                    sample_p=sample_p,
+                )
+                data_collector.end_cycle()
+            
             # print(accept_length)
             # Adjusting the input sequence, draft model forward
             input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, hidden_state, sample_token = update_inference_inputs(

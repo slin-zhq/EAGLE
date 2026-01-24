@@ -22,10 +22,12 @@ try:
     from ..model.ea_model import EaModel
     from ..model.kv_cache import initialize_past_key_values
     from ..model.utils import *
+    from data_collector import SimpleDumpCollector
 except:
     from eagle.model.ea_model import EaModel
     from eagle.model.kv_cache import initialize_past_key_values
     from eagle.model.utils import *
+    from data_collector import SimpleDumpCollector
 
 
 
@@ -101,6 +103,16 @@ def get_model_answers(
         args
 ):
     # temperature = 0.0
+
+    # Initialize data collector if requested
+    collector = None
+    if getattr(args, 'collect_data', False):
+        collector_mode = getattr(args, 'collector_mode', 'simple_dump')
+        data_output_dir = getattr(args, 'data_output_dir', None)
+        if collector_mode == 'simple_dump' and data_output_dir:
+            print(f"[DataCollection] Enabled: mode={collector_mode}, output={data_output_dir}")
+        else:
+            print(f"[DataCollection] Disabled: collect_data={args.collect_data}, mode={collector_mode}, dir={data_output_dir}")
 
     model = EaModel.from_pretrained(
         base_model_path=base_model_path,
@@ -212,6 +224,16 @@ def get_model_answers(
 
     # questions=questions[6:]
     for question in tqdm(questions):
+        # Initialize collector for this question
+        question_collector = None
+        if getattr(args, 'collect_data', False):
+            collector_mode = getattr(args, 'collector_mode', 'simple_dump')
+            data_output_dir = getattr(args, 'data_output_dir', None)
+            if collector_mode == 'simple_dump' and data_output_dir:
+                question_collector = SimpleDumpCollector(
+                    output_dir=data_output_dir,
+                    question_id=question['question_id']
+                )
 
         choices = []
         for i in range(num_choices):
@@ -246,6 +268,7 @@ def get_model_answers(
                     temperature=temperature,
                     log=True,
                     is_llama3=True,
+                    data_collector=question_collector,
                 )
                 torch.cuda.synchronize()
                 total_time = time.time() - start_time
@@ -290,6 +313,10 @@ def get_model_answers(
                 })
             # torch.cuda.empty_cache()
             choices.append({"index": i, "turns": turns, "idxs": idxs, "new_tokens": new_tokens, "wall_time": wall_time})
+
+        # Finalize collector for this question
+        if question_collector is not None:
+            question_collector.finalize_question()
 
         # Dump answers
         os.makedirs(os.path.dirname(answer_file), exist_ok=True)
@@ -407,6 +434,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_eagle3",
         action="store_true"
+    )
+    
+    # Data collection arguments
+    parser.add_argument(
+        "--collect-data",
+        action="store_true",
+        help="Enable data collection during inference"
+    )
+    parser.add_argument(
+        "--collector-mode",
+        type=str,
+        default="simple_dump",
+        choices=["simple_dump"],
+        help="Data collection mode"
+    )
+    parser.add_argument(
+        "--data-output-dir",
+        type=str,
+        help="Output directory for collected data"
     )
 
     args = parser.parse_args()
