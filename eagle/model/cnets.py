@@ -535,6 +535,8 @@ class Model(nn.Module):
         self.norm=LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.logsoftmax = nn.LogSoftmax(dim=-1)
 
+        self.last_topk_raw = None
+
         d2t=torch.zeros((config.draft_vocab_size),dtype=torch.long)
         t2d=torch.zeros((config.vocab_size),dtype=torch.bool)
         self.register_buffer("d2t", d2t)
@@ -676,6 +678,8 @@ class Model(nn.Module):
 
         sample_token = input_ids[:, -1]
 
+        self.last_topk_raw = None
+
         scores_list = []
         parents_list = []
         ss_token = []
@@ -762,6 +766,12 @@ class Model(nn.Module):
         top_scores = torch.topk(scores_list, total_tokens, dim=-1)
         top_scores_index = top_scores.indices
         top_scores_index = torch.sort(top_scores_index).values
+
+        self.last_topk_raw = {
+            "scores_list": scores_list.detach(),
+            "ss_token_list": ss_token_list.detach(),
+            "top_scores_index": top_scores_index.detach(),
+        }
 
         draft_tokens = ss_token_list[top_scores_index]
         draft_tokens = torch.cat((sample_token, draft_tokens), dim=0)

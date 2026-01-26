@@ -2,7 +2,9 @@
 Simple Dump Data Collector
 
 Collects raw tensors from EAGLE-3 draft-verify cycles for manual examination.
-Saves per-cycle .pt files with minimal processing.
+Saves per-cycle .pt files with minimal processing, now including the raw
+`scores_list`, `ss_token_list`, and `top_scores_index` emitted by
+`topK_genrate()` so Phase 0 features can be reconstructed offline.
 """
 import os
 import json
@@ -58,6 +60,9 @@ class SimpleDumpCollector:
         retrieve_indices: torch.Tensor,
         tree_mask: torch.Tensor,
         tree_position_ids: torch.Tensor,
+        scores_list: Optional[torch.Tensor] = None,
+        ss_token_list: Optional[torch.Tensor] = None,
+        top_scores_index: Optional[torch.Tensor] = None,
     ):
         """
         Collect outputs from topK_genrate() (draft generation).
@@ -72,6 +77,12 @@ class SimpleDumpCollector:
         self.cycle_data_buffer['retrieve_indices'] = retrieve_indices.cpu()
         self.cycle_data_buffer['tree_mask'] = tree_mask.cpu()
         self.cycle_data_buffer['tree_position_ids'] = tree_position_ids.cpu()
+        if scores_list is not None:
+            self.cycle_data_buffer['scores_list'] = scores_list.cpu()
+        if ss_token_list is not None:
+            self.cycle_data_buffer['ss_token_list'] = ss_token_list.cpu()
+        if top_scores_index is not None:
+            self.cycle_data_buffer['top_scores_index'] = top_scores_index.cpu()
     
     def collect_verification_inputs(
         self,
@@ -80,11 +91,16 @@ class SimpleDumpCollector:
     ):
         """
         Collect inputs to evaluate_posterior() (verification).
-        
+
+        Accepts either:
+        - Full logits for all candidates: shape (num_candidates, seq_len, vocab_size)
+        - Or per-position logits for a single candidate: shape (seq_len, vocab_size)
+
         Args:
-            logits: Target model logits for all draft positions, shape (num_positions, vocab_size)
+            logits: Target model logits (see shapes above)
             candidates: Candidate sequences, shape (num_candidates, max_length)
         """
+        # Store logits as provided (prefer full logits when available)
         self.cycle_data_buffer['logits'] = logits.cpu()
         self.cycle_data_buffer['candidates'] = candidates.cpu()
     
@@ -129,7 +145,8 @@ class SimpleDumpCollector:
         # Populate shapes and dtypes
         tensor_keys = [
             'draft_tokens', 'retrieve_indices', 'tree_mask', 'tree_position_ids',
-            'logits', 'candidates', 'best_candidate', 'sample_p'
+            'logits', 'candidates', 'best_candidate', 'sample_p',
+            'scores_list', 'ss_token_list', 'top_scores_index',
         ]
         for key in tensor_keys:
             if key in self.cycle_data_buffer:
@@ -150,6 +167,9 @@ class SimpleDumpCollector:
             'best_candidate': self.cycle_data_buffer.get('best_candidate'),
             'accept_length': self.cycle_data_buffer.get('accept_length'),
             'sample_p': self.cycle_data_buffer.get('sample_p'),
+            'scores_list': self.cycle_data_buffer.get('scores_list'),
+            'ss_token_list': self.cycle_data_buffer.get('ss_token_list'),
+            'top_scores_index': self.cycle_data_buffer.get('top_scores_index'),
             'metadata': metadata,
         }
         

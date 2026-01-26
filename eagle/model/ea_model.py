@@ -274,15 +274,19 @@ class EaModel(nn.Module):
             
             # Collect draft outputs
             if data_collector is not None:
+                topk_raw = getattr(self.ea_layer, "last_topk_raw", None)
                 data_collector.collect_draft_outputs(
                     draft_tokens=draft_tokens[0],  # Remove batch dim
                     retrieve_indices=retrieve_indices,
                     tree_mask=tree_mask,
                     tree_position_ids=tree_position_ids,
+                    scores_list=topk_raw.get("scores_list") if topk_raw else None,
+                    ss_token_list=topk_raw.get("ss_token_list") if topk_raw else None,
+                    top_scores_index=topk_raw.get("top_scores_index") if topk_raw else None,
                 )
-                # Pass full logits tensor - collector will extract what it needs
+                # Pass full logits tensor for all candidates (store full (num_candidates, seq_len, vocab_size))
                 data_collector.collect_verification_inputs(
-                    logits=logits[0],  # Full logits for all positions (remove batch dim)
+                    logits=logits,  # Full logits for all candidates and positions
                     candidates=candidates,
                 )
             

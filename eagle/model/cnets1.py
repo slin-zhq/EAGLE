@@ -524,6 +524,7 @@ class Model(nn.Module):
         self.fc = nn.Linear(2 * config.hidden_size, config.hidden_size, bias=bias)
         self.act = ACT2FN[config.hidden_act]
         self.logsoftmax = nn.LogSoftmax(dim=-1)
+        self.last_topk_raw = None
         for param in self.embed_tokens.parameters():
             param.requires_grad = False
 
@@ -679,6 +680,8 @@ class Model(nn.Module):
 
         sample_token = input_ids[:, -1]
 
+        self.last_topk_raw = None
+
         scores_list = []
         parents_list = []
         ss_token = []
@@ -757,6 +760,12 @@ class Model(nn.Module):
         top_scores = torch.topk(scores_list, total_tokens, dim=-1)
         top_scores_index = top_scores.indices
         top_scores_index = torch.sort(top_scores_index).values
+
+        self.last_topk_raw = {
+            "scores_list": scores_list.detach(),
+            "ss_token_list": ss_token_list.detach(),
+            "top_scores_index": top_scores_index.detach(),
+        }
 
         draft_tokens = ss_token_list[top_scores_index]
         draft_tokens = torch.cat((sample_token, draft_tokens), dim=0)
