@@ -27,24 +27,26 @@ class SimpleDumpCollector:
     - Derived metrics and metadata
     """
     
-    def __init__(self, output_dir: str, question_id: int):
+    def __init__(self, output_dir: str, question_id: int, turn_id: int = 0):
         """
-        Initialize collector for a specific question.
+        Initialize collector for a specific question and turn.
         
         Args:
             output_dir: Base output directory (e.g., data_output_simple_dump_20260122_143022/mt_bench)
             question_id: Question identifier
+            turn_id: Turn index for multi-turn conversations (default: 0 for single-turn benchmarks)
         """
         self.output_dir = Path(output_dir)
         self.question_id = question_id
-        self.question_dir = self.output_dir / f"question_{question_id}"
+        self.turn_id = turn_id
+        self.question_dir = self.output_dir / f"question_{question_id}_turn_{turn_id}"
         self.question_dir.mkdir(parents=True, exist_ok=True)
         
         self.cycle_count = 0
         self.cycle_data_buffer = {}  # Stores data for current cycle
         self.summary_rows = []  # For CSV summary
         
-        print(f"[SimpleDumpCollector] Initialized for question {question_id}")
+        print(f"[SimpleDumpCollector] Initialized for question {question_id}, turn {turn_id}")
         print(f"[SimpleDumpCollector] Output: {self.question_dir}")
     
     def start_cycle(self):
@@ -52,6 +54,7 @@ class SimpleDumpCollector:
         self.cycle_data_buffer = {
             'cycle_id': self.cycle_count,
             'question_id': self.question_id,
+            'turn_id': self.turn_id,
         }
     
     def collect_draft_outputs(
@@ -136,6 +139,7 @@ class SimpleDumpCollector:
         metadata = {
             'cycle_id': self.cycle_data_buffer['cycle_id'],
             'question_id': self.cycle_data_buffer['question_id'],
+            'turn_id': self.cycle_data_buffer['turn_id'],
             'timestamp': datetime.now().isoformat(),
             'shapes': {},
             'dtypes': {},
@@ -158,6 +162,7 @@ class SimpleDumpCollector:
         data_package = {
             'cycle_id': self.cycle_data_buffer['cycle_id'],
             'question_id': self.cycle_data_buffer['question_id'],
+            'turn_id': self.cycle_data_buffer['turn_id'],
             'draft_tokens': self.cycle_data_buffer.get('draft_tokens'),
             'retrieve_indices': self.cycle_data_buffer.get('retrieve_indices'),
             'tree_mask': self.cycle_data_buffer.get('tree_mask'),
@@ -183,6 +188,7 @@ class SimpleDumpCollector:
             accept_length = int(accept_length.item())
         summary_row = {
             'question_id': self.question_id,
+            'turn_id': self.turn_id,
             'cycle_id': self.cycle_count,
             'accept_length': accept_length,
             **derived_metrics,
@@ -260,6 +266,7 @@ class SimpleDumpCollector:
         
         metadata = {
             'question_id': self.question_id,
+            'turn_id': self.turn_id,
             'total_cycles': total_cycles,
             'total_tokens_accepted': total_accepted,
             'total_tokens_drafted': total_drafted,
@@ -273,7 +280,7 @@ class SimpleDumpCollector:
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
         
-        print(f"[SimpleDumpCollector] Finalized question {self.question_id}")
+        print(f"[SimpleDumpCollector] Finalized question {self.question_id}, turn {self.turn_id}")
         print(f"[SimpleDumpCollector]   Total cycles: {total_cycles}")
         print(f"[SimpleDumpCollector]   Avg τ (tau): {avg_tau:.2f} tokens/cycle")
         print(f"[SimpleDumpCollector]   Avg α (alpha): {avg_acceptance_rate:.3f}")
@@ -290,6 +297,7 @@ class SimpleDumpCollector:
         summary_rows = []
         
         # Collect all metadata.json files
+        # Pattern now matches both old (question_X) and new (question_X_turn_Y) formats
         for question_dir in sorted(output_path.glob("question_*")):
             metadata_file = question_dir / "metadata.json"
             if metadata_file.exists():

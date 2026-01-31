@@ -224,29 +224,30 @@ def get_model_answers(
 
     # questions=questions[6:]
     for question in tqdm(questions):
-        # Initialize collector for this question
-        question_collector = None
-        if getattr(args, 'collect_data', False):
-            collector_mode = getattr(args, 'collector_mode', 'simple_dump')
-            data_output_dir = getattr(args, 'data_output_dir', None)
-            if collector_mode == 'simple_dump' and data_output_dir:
-                question_collector = SimpleDumpCollector(
-                    output_dir=data_output_dir,
-                    question_id=question['question_id']
-                )
-
         choices = []
         for i in range(num_choices):
             torch.manual_seed(i)
             messages = [
                 {"role": "system",
-                 "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."},
+                 "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\\n\\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."},
             ]
             turns = []
             idxs = []
             new_tokens = []
             wall_time = []
             for j in range(len(question["turns"])):
+                # Initialize collector for this specific turn
+                question_collector = None
+                if getattr(args, 'collect_data', False):
+                    collector_mode = getattr(args, 'collector_mode', 'simple_dump')
+                    data_output_dir = getattr(args, 'data_output_dir', None)
+                    if collector_mode == 'simple_dump' and data_output_dir:
+                        question_collector = SimpleDumpCollector(
+                            output_dir=data_output_dir,
+                            question_id=question['question_id'],
+                            turn_id=j  # Pass the turn index
+                        )
+                
                 qs = question["turns"][j]
                 messages.append({
                     "role": "user",
@@ -311,12 +312,12 @@ def get_model_answers(
                     "role": "assistant",
                     "content": output
                 })
+                
+                # Finalize collector for this turn
+                if question_collector is not None:
+                    question_collector.finalize_question()
             # torch.cuda.empty_cache()
             choices.append({"index": i, "turns": turns, "idxs": idxs, "new_tokens": new_tokens, "wall_time": wall_time})
-
-        # Finalize collector for this question
-        if question_collector is not None:
-            question_collector.finalize_question()
 
         # Dump answers
         os.makedirs(os.path.dirname(answer_file), exist_ok=True)
