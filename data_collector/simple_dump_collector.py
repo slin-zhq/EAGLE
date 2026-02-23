@@ -5,6 +5,10 @@ Collects raw tensors from EAGLE-3 draft-verify cycles for manual examination.
 Saves per-cycle .pt files with minimal processing, now including the raw
 `scores_list`, `ss_token_list`, and `top_scores_index` emitted by
 `topK_genrate()` so Phase 0 features can be reconstructed offline.
+
+Also records per-cycle stage-level timing (verify, evaluate, update) and
+one-time prefill timing.  Timing is measured at the caller (ea_model.py)
+using torch.cuda.synchronize() + time.time(), then passed in here.
 """
 import os
 import json
@@ -45,6 +49,7 @@ class SimpleDumpCollector:
         self.cycle_count = 0
         self.cycle_data_buffer = {}  # Stores data for current cycle
         self.summary_rows = []  # For CSV summary
+        self.prefill_time_s = None  # One-time prefill timing (set via set_prefill_time)
         
         print(f"[SimpleDumpCollector] Initialized for question {question_id}, turn {turn_id}")
         print(f"[SimpleDumpCollector] Output: {self.question_dir}")
@@ -73,17 +78,21 @@ class SimpleDumpCollector:
         Args:
             draft_tokens: Token IDs in draft tree, shape (draft_tree_size,)
             retrieve_indices: Parent-child indices, shape (draft_tree_size,)
-            tree_mask: Attention mask, shape (draft_tree_size, draft_tree_size)
+            tree_mask: Attention mask, shape (draft_tree_size, draft_tree_size) [NOT SAVED - unused by build_tables.py]
             tree_position_ids: Position IDs, shape (draft_tree_size,)
         """
         self.cycle_data_buffer['draft_tokens'] = draft_tokens.cpu()
         self.cycle_data_buffer['retrieve_indices'] = retrieve_indices.cpu()
-        self.cycle_data_buffer['tree_mask'] = tree_mask.cpu()
+        # tree_mask: (draft_tree_size, draft_tree_size) — not used by build_tables.py or any analysis script.
+        # Commented out to save disk space. Re-enable if attention mask analysis is needed.
+        # self.cycle_data_buffer['tree_mask'] = tree_mask.cpu()
         self.cycle_data_buffer['tree_position_ids'] = tree_position_ids.cpu()
         if scores_list is not None:
             self.cycle_data_buffer['scores_list'] = scores_list.cpu()
-        if ss_token_list is not None:
-            self.cycle_data_buffer['ss_token_list'] = ss_token_list.cpu()
+        # ss_token_list: not used by build_tables.py or any downstream analysis script.
+        # Commented out to save disk space. Re-enable if Phase 0 feature reconstruction is needed.
+        # if ss_token_list is not None:
+        #     self.cycle_data_buffer['ss_token_list'] = ss_token_list.cpu()
         if top_scores_index is not None:
             self.cycle_data_buffer['top_scores_index'] = top_scores_index.cpu()
     
@@ -100,11 +109,13 @@ class SimpleDumpCollector:
         - Or per-position logits for a single candidate: shape (seq_len, vocab_size)
 
         Args:
-            logits: Target model logits (see shapes above)
+            logits: Target model logits (see shapes above) [NOT SAVED - unused by build_tables.py]
             candidates: Candidate sequences, shape (num_candidates, max_length)
         """
-        # Store logits as provided (prefer full logits when available)
-        self.cycle_data_buffer['logits'] = logits.cpu()
+        # logits: (num_candidates, seq_len, vocab_size) — by far the largest tensor (e.g. 60 * 6 * 32000 float16).
+        # Not used by build_tables.py or any analysis script; not needed for ML predictor features.
+        # Commented out to save disk space. Re-enable if logit-level posterior analysis is needed.
+        # self.cycle_data_buffer['logits'] = logits.cpu()
         self.cycle_data_buffer['candidates'] = candidates.cpu()
     
     def collect_verification_outputs(
@@ -128,6 +139,26 @@ class SimpleDumpCollector:
         self.cycle_data_buffer['accept_length'] = accept_length
         self.cycle_data_buffer['sample_p'] = sample_p.cpu()
     
+    def collect_timing(self, timing_dict: Dict[str, float]):
+        """
+        Store per-cycle stage timing measured by the caller.
+        
+        Args:
+            timing_dict: Dict with keys like 'verify_s', 'evaluate_s', 'update_s',
+                         each mapping to wall-clock seconds for that stage.
+        """
+        self.cycle_data_buffer['timing'] = timing_dict
+    
+    def set_prefill_time(self, prefill_time_s: float):
+        """
+        Record the one-time prefill duration (initialize_tree).
+        Called once before the main generation loop starts.
+        
+        Args:
+            prefill_time_s: Wall-clock seconds for the prefill stage.
+        """
+        self.prefill_time_s = prefill_time_s
+    
     def end_cycle(self):
         """
         Finalize current cycle: compute metrics, save .pt file, update summary.
@@ -148,9 +179,12 @@ class SimpleDumpCollector:
         
         # Populate shapes and dtypes
         tensor_keys = [
-            'draft_tokens', 'retrieve_indices', 'tree_mask', 'tree_position_ids',
-            'logits', 'candidates', 'best_candidate', 'sample_p',
-            'scores_list', 'ss_token_list', 'top_scores_index',
+            'draft_tokens', 'retrieve_indices', 'tree_position_ids',
+            # 'tree_mask',       # Commented out: not collected (saves space)
+            # 'logits',          # Commented out: not collected (saves space)
+            # 'ss_token_list',   # Commented out: not collected (saves space)
+            'candidates', 'best_candidate', 'sample_p',
+            'scores_list', 'top_scores_index',
         ]
         for key in tensor_keys:
             if key in self.cycle_data_buffer:
@@ -165,16 +199,17 @@ class SimpleDumpCollector:
             'turn_id': self.cycle_data_buffer['turn_id'],
             'draft_tokens': self.cycle_data_buffer.get('draft_tokens'),
             'retrieve_indices': self.cycle_data_buffer.get('retrieve_indices'),
-            'tree_mask': self.cycle_data_buffer.get('tree_mask'),
+            # 'tree_mask': self.cycle_data_buffer.get('tree_mask'),  # Not collected: unused, saves space
             'tree_position_ids': self.cycle_data_buffer.get('tree_position_ids'),
-            'logits': self.cycle_data_buffer.get('logits'),
+            # 'logits': self.cycle_data_buffer.get('logits'),        # Not collected: unused, saves space
             'candidates': self.cycle_data_buffer.get('candidates'),
             'best_candidate': self.cycle_data_buffer.get('best_candidate'),
             'accept_length': self.cycle_data_buffer.get('accept_length'),
             'sample_p': self.cycle_data_buffer.get('sample_p'),
             'scores_list': self.cycle_data_buffer.get('scores_list'),
-            'ss_token_list': self.cycle_data_buffer.get('ss_token_list'),
+            # 'ss_token_list': self.cycle_data_buffer.get('ss_token_list'),  # Not collected: unused, saves space
             'top_scores_index': self.cycle_data_buffer.get('top_scores_index'),
+            'timing': self.cycle_data_buffer.get('timing'),
             'metadata': metadata,
         }
         
@@ -186,12 +221,15 @@ class SimpleDumpCollector:
         accept_length = self.cycle_data_buffer.get('accept_length')
         if torch.is_tensor(accept_length):
             accept_length = int(accept_length.item())
+        # Include per-cycle timing in summary if available
+        timing = self.cycle_data_buffer.get('timing', {})
         summary_row = {
             'question_id': self.question_id,
             'turn_id': self.turn_id,
             'cycle_id': self.cycle_count,
             'accept_length': accept_length,
             **derived_metrics,
+            **{f'timing_{k}': v for k, v in timing.items()},
         }
         self.summary_rows.append(summary_row)
         
@@ -264,6 +302,11 @@ class SimpleDumpCollector:
             avg_acceptance_rate = 0
             avg_tau = 0
         
+        # Aggregate timing if available
+        timing_keys = [k for k in self.summary_rows[0] if k.startswith('timing_')] if self.summary_rows else []
+        timing_totals = {k: sum(row.get(k, 0) for row in self.summary_rows) for k in timing_keys}
+        timing_means = {k.replace('timing_', 'avg_'): v / total_cycles for k, v in timing_totals.items()} if total_cycles > 0 else {}
+        
         metadata = {
             'question_id': self.question_id,
             'turn_id': self.turn_id,
@@ -272,6 +315,9 @@ class SimpleDumpCollector:
             'total_tokens_drafted': total_drafted,
             'average_acceptance_rate': avg_acceptance_rate,
             'average_tau_per_cycle': avg_tau,
+            'prefill_time_s': self.prefill_time_s,
+            **timing_totals,
+            **timing_means,
             'summary': self.summary_rows,
         }
         

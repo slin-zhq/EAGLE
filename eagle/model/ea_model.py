@@ -243,13 +243,23 @@ class EaModel(nn.Module):
 
         input_len = input_ids.shape[1]
         reset_tree_mode(self)
-        # prefill
+        # Prefill timing should exclude collector overhead (one-shot)
+        if data_collector is not None:
+            torch.cuda.synchronize()
+            t_prefill_start = time.time()
         draft_tokens, retrieve_indices, tree_mask, tree_position_ids, logits, hidden_state, sample_token = initialize_tree(
             input_ids, self, past_key_values, logits_processor
         )
+        if data_collector is not None:
+            torch.cuda.synchronize()
+            data_collector.set_prefill_time(time.time() - t_prefill_start)
         new_token = 0
         max_length = max_length - self.ea_layer.total_tokens - 10
         for idx in range(max_length):
+            t_tree_decode_s = None
+            t_evaluate_s = None
+            t_update_s = None
+            t_draft_s = None
             # Start new cycle for data collection
             if data_collector is not None:
                 data_collector.start_cycle()
@@ -258,7 +268,10 @@ class EaModel(nn.Module):
             self.base_model.model.tree_mask = tree_mask
 
             draft_tokens = draft_tokens.to(input_ids.device)
-            # Target model forward, get logits
+            # --- Stage 1: Tree Decoding (target model forward pass) ---
+            if data_collector is not None:
+                torch.cuda.synchronize()
+                t_tree_decode_start = time.time()
             logits, hidden_state_new, outputs = tree_decoding(
                 self,
                 draft_tokens,
@@ -267,12 +280,17 @@ class EaModel(nn.Module):
                 input_ids,
                 retrieve_indices,
             )
+            # --- End Stage 1: Tree Decoding ---
+            if data_collector is not None:
+                torch.cuda.synchronize()
+                t_tree_decode_end = time.time()
+                t_tree_decode_s = t_tree_decode_end - t_tree_decode_start
             # retrieve_indices=tree_buffers["retrieve_indices"]
             # logits = logits[0, retrieve_indices]
             draft_tokens = torch.cat((draft_tokens, padding), dim=1)
             candidates = draft_tokens[0, retrieve_indices]
             
-            # Collect draft outputs
+            # Collect draft outputs (outside timing windows)
             if data_collector is not None:
                 topk_raw = getattr(self.ea_layer, "last_topk_raw", None)
                 data_collector.collect_draft_outputs(
@@ -290,23 +308,32 @@ class EaModel(nn.Module):
                     candidates=candidates,
                 )
             
+            # --- Stage 2: Evaluate (posterior accept/reject) ---
+            if data_collector is not None:
+                torch.cuda.synchronize()
+                t_evaluate_start = time.time()
             # verification
             best_candidate, accept_length, sample_p = evaluate_posterior(
                 logits, candidates, logits_processor
             )
-            
-            # Collect verification outputs
             if data_collector is not None:
+                torch.cuda.synchronize()
+                t_evaluate_s = time.time() - t_evaluate_start
+                # Collect verification outputs (outside timing windows)
                 data_collector.collect_verification_outputs(
                     best_candidate=best_candidate,
                     accept_length=accept_length,
                     sample_p=sample_p,
                 )
-                data_collector.end_cycle()
             
+            # --- Stage 3: Update (KV cache + next draft) ---
+            if data_collector is not None:
+                torch.cuda.synchronize()
+                t_update_start = time.time()
             # print(accept_length)
             # Adjusting the input sequence, draft model forward
-            input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, hidden_state, sample_token = update_inference_inputs(
+            _timing_enabled = data_collector is not None
+            _result = update_inference_inputs(
                 input_ids,
                 candidates,
                 best_candidate,
@@ -318,9 +345,27 @@ class EaModel(nn.Module):
                 current_length_data,
                 self,
                 hidden_state_new,
-                sample_p
+                sample_p,
+                timing_enabled=_timing_enabled,
             )
-
+            if _timing_enabled:
+                input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, hidden_state, sample_token, draft_time_s = _result
+            else:
+                input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, hidden_state, sample_token = _result
+                draft_time_s = None
+            
+            # --- End timing & finalize cycle ---
+            if data_collector is not None:
+                torch.cuda.synchronize()
+                t_update_s = time.time() - t_update_start
+                t_draft_s = draft_time_s
+                data_collector.collect_timing({
+                    'tree_decode_s': t_tree_decode_s,
+                    'evaluate_s': t_evaluate_s,
+                    'update_s': t_update_s,
+                    'draft_s': t_draft_s,
+                })
+                data_collector.end_cycle()
             if is_llama3:
                 if stop_token_id in input_ids[0, input_len:].tolist():
                     break

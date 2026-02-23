@@ -428,7 +428,8 @@ def update_inference_inputs(
         current_length_data,
         model,
         hidden_state_new,
-        sample_p
+        sample_p,
+        timing_enabled=False,
 ):
     prev_input_len = input_ids.shape[1]
     # Map the best candidate indices to the original indices in the sequence
@@ -463,13 +464,22 @@ def update_inference_inputs(
         token = torch.argmax(prob)
         token = token[None, None]
     # hidden_state = torch.cat((hidden_state, accept_hidden_state_new), dim=1)
+    # --- Optionally time the draft tree generation (topK_genrate) ---
+    if timing_enabled:
+        torch.cuda.synchronize()
+        t_draft_start = time.time()
     draft_tokens, retrieve_indices,tree_mask,tree_position_ids = model.ea_layer.topK_genrate(accept_hidden_state_new,
                                               input_ids=torch.cat((input_ids, token.to(input_ids.device)), dim=1),
                                               head=model.base_model.lm_head,logits_processor=logits_processor)
+    if timing_enabled:
+        torch.cuda.synchronize()
+        draft_time_s = time.time() - t_draft_start
 
 
     new_token += accept_length + 1
 
+    if timing_enabled:
+        return input_ids, draft_tokens, retrieve_indices,tree_mask,tree_position_ids, new_token, None, token, draft_time_s
     return input_ids, draft_tokens, retrieve_indices,tree_mask,tree_position_ids, new_token, None, token
 
 
