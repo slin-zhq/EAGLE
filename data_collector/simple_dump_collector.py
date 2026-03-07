@@ -50,6 +50,7 @@ class SimpleDumpCollector:
         self.cycle_data_buffer = {}  # Stores data for current cycle
         self.summary_rows = []  # For CSV summary
         self.prefill_time_s = None  # One-time prefill timing (set via set_prefill_time)
+        self.cycle0_pruning_time_s = None # One-time cycle 0 pruning timing
         
         print(f"[SimpleDumpCollector] Initialized for question {question_id}, turn {turn_id}")
         print(f"[SimpleDumpCollector] Output: {self.question_dir}")
@@ -159,6 +160,13 @@ class SimpleDumpCollector:
         """
         self.prefill_time_s = prefill_time_s
     
+    def set_cycle0_pruning_time(self, cycle0_pruning_time_s: float):
+        """
+        Record the one-time cycle 0 pruning duration.
+        Called once after prefill and before the main generation loop.
+        """
+        self.cycle0_pruning_time_s = cycle0_pruning_time_s
+
     def end_cycle(self):
         """
         Finalize current cycle: compute metrics, save .pt file, update summary.
@@ -316,6 +324,7 @@ class SimpleDumpCollector:
             'average_acceptance_rate': avg_acceptance_rate,
             'average_tau_per_cycle': avg_tau,
             'prefill_time_s': self.prefill_time_s,
+            'cycle0_pruning_time_s': self.cycle0_pruning_time_s,
             **timing_totals,
             **timing_means,
             'summary': self.summary_rows,

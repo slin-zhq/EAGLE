@@ -21,6 +21,13 @@ from .cnets import Model
 from .cnets1 import Model as Model1
 from .configs import EConfig
 
+# Pruner integration (lazy import to avoid hard dependency)
+try:
+    from .pruner import OraclePruner, prune_draft_tree
+except ImportError:
+    OraclePruner = None
+    prune_draft_tree = None
+
 
 class EaModel(nn.Module):
 
@@ -76,6 +83,9 @@ class EaModel(nn.Module):
         load_=self.ea_layer.load_state_dict(ea_layer_state_dict, strict=False)
         self.ea_layer.to(self.base_model.dtype).to(device)
         self.ea_layer.init_tree()
+
+        # Pruner (set externally or via from_pretrained; default: no pruning)
+        self.pruner = None
 
     def get_tokenizer(self):
         """Get the tokenizer of the base model.
@@ -195,6 +205,23 @@ class EaModel(nn.Module):
         else:
             return outputs, hidden_states
 
+    def _maybe_prune(
+            self, draft_tokens, retrieve_indices, tree_mask, tree_position_ids,
+            question_id, turn_id, cycle_idx,
+    ):
+        """Apply subtree pruning if a pruner is loaded."""
+        if self.pruner is None or prune_draft_tree is None:
+            return draft_tokens, retrieve_indices, tree_mask, tree_position_ids
+
+        return prune_draft_tree(
+            self.pruner,
+            draft_tokens, retrieve_indices, tree_mask, tree_position_ids,
+            question_id=question_id,
+            turn_id=turn_id,
+            cycle_idx=cycle_idx,
+            verify=True,  # enable determinism checks
+        )
+
     @torch.no_grad()
     def eagenerate(
             self,
@@ -207,6 +234,8 @@ class EaModel(nn.Module):
             log=False,
             is_llama3=False,
             data_collector=None,
+            question_id=None,
+            turn_id=None,
 
     ):
         if is_llama3:
@@ -253,6 +282,21 @@ class EaModel(nn.Module):
         if data_collector is not None:
             torch.cuda.synchronize()
             data_collector.set_prefill_time(time.time() - t_prefill_start)
+
+        # --- Pruning injection point A: first cycle's draft tree ---
+        cycle_idx_counter = 0
+        if self.pruner is not None and question_id is not None:
+            if data_collector is not None:
+                torch.cuda.synchronize()
+                t_prune_start = time.time()
+            draft_tokens, retrieve_indices, tree_mask, tree_position_ids = \
+                self._maybe_prune(draft_tokens, retrieve_indices, tree_mask,
+                                  tree_position_ids, question_id, turn_id or 0,
+                                  cycle_idx_counter)
+            if data_collector is not None:
+                torch.cuda.synchronize()
+                data_collector.set_cycle0_pruning_time(time.time() - t_prune_start)
+
         new_token = 0
         max_length = max_length - self.ea_layer.total_tokens - 10
         for idx in range(max_length):
@@ -260,6 +304,7 @@ class EaModel(nn.Module):
             t_evaluate_s = None
             t_update_s = None
             t_draft_s = None
+            t_prune_s = None
             # Start new cycle for data collection
             if data_collector is not None:
                 data_collector.start_cycle()
@@ -353,18 +398,37 @@ class EaModel(nn.Module):
             else:
                 input_ids, draft_tokens, retrieve_indices, tree_mask, tree_position_ids, new_token, hidden_state, sample_token = _result
                 draft_time_s = None
-            
-            # --- End timing & finalize cycle ---
+
             if data_collector is not None:
                 torch.cuda.synchronize()
                 t_update_s = time.time() - t_update_start
+
+            # --- Pruning injection point B: subsequent cycles ---
+            cycle_idx_counter += 1
+            if self.pruner is not None and question_id is not None:
+                if data_collector is not None:
+                    torch.cuda.synchronize()
+                    t_prune_start = time.time()
+                draft_tokens, retrieve_indices, tree_mask, tree_position_ids = \
+                    self._maybe_prune(draft_tokens, retrieve_indices, tree_mask,
+                                      tree_position_ids, question_id,
+                                      turn_id or 0, cycle_idx_counter)
+                if data_collector is not None:
+                    torch.cuda.synchronize()
+                    t_prune_s = time.time() - t_prune_start
+
+            # --- End timing & finalize cycle ---
+            if data_collector is not None:
                 t_draft_s = draft_time_s
-                data_collector.collect_timing({
+                timing_dict = {
                     'tree_decode_s': t_tree_decode_s,
                     'evaluate_s': t_evaluate_s,
                     'update_s': t_update_s,
                     'draft_s': t_draft_s,
-                })
+                }
+                if t_prune_s is not None:
+                    timing_dict['prune_s'] = t_prune_s
+                data_collector.collect_timing(timing_dict)
                 data_collector.end_cycle()
             if is_llama3:
                 if stop_token_id in input_ids[0, input_len:].tolist():

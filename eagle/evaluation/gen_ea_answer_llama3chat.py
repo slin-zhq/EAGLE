@@ -127,6 +127,32 @@ def get_model_answers(
         use_eagle3=args.use_eagle3,
     )
 
+    # --- Pruner setup ---
+    if getattr(args, 'pruner_mode', 'none') == 'oracle':
+        from eagle.model.pruner import OraclePruner
+        oracle_data_path = getattr(args, 'oracle_data_path', None)
+        if oracle_data_path is None:
+            raise ValueError("--oracle-data-path is required when --pruner-mode=oracle")
+        # We'll set bench_name per-bench when running, for now use args.bench_name
+        # run_id will be extracted from the parquet's cycle_uuid
+        import json as _json
+        _metadata_path = os.path.join(oracle_data_path, 'run_metadata.json')
+        if os.path.exists(_metadata_path):
+            with open(_metadata_path, 'r') as _f:
+                _metadata = _json.load(_f)
+            _run_id = _metadata.get('run_id', os.path.basename(oracle_data_path))
+        else:
+            _run_id = os.path.basename(oracle_data_path)
+        pruner = OraclePruner(
+            nodes_parquet_path=oracle_data_path,
+            run_id=_run_id,
+            bench_name=args.bench_name,
+        )
+        model.pruner = pruner
+        print(f"[Pruner] Oracle pruner loaded from {oracle_data_path}")
+    else:
+        print(f"[Pruner] No pruner (mode={getattr(args, 'pruner_mode', 'none')})")
+
     tokenizer = model.get_tokenizer()
 
     if temperature > 1e-5:
@@ -176,6 +202,8 @@ def get_model_answers(
                 temperature=temperature,
                 log=True,
                 is_llama3=True,
+                question_id=question['question_id'],
+                turn_id=j,
             )
             torch.cuda.synchronize()
             total_time = time.time() - start_time
@@ -270,6 +298,8 @@ def get_model_answers(
                     log=True,
                     is_llama3=True,
                     data_collector=question_collector,
+                    question_id=question['question_id'],
+                    turn_id=j,
                 )
                 torch.cuda.synchronize()
                 total_time = time.time() - start_time
@@ -330,6 +360,16 @@ def get_model_answers(
                 "tstamp": time.time(),
             }
             fout.write(json.dumps(ans_json) + "\n")
+
+    # Print oracle pruner stats at the end
+    if model.pruner is not None and hasattr(model.pruner, 'get_stats'):
+        stats = model.pruner.get_stats()
+        print(f"\n[OraclePruner Stats]")
+        print(f"  Cycles matched: {stats['cycles_matched']}")
+        print(f"  Cycles missed:  {stats['cycles_missed']}")
+        print(f"  Nodes total:    {stats['nodes_total']}")
+        print(f"  Nodes pruned:   {stats['nodes_pruned']}")
+        print(f"  Prune rate:     {stats['prune_rate']:.1%}")
 
 
 def reorg_answer_file(answer_file):
@@ -454,6 +494,20 @@ if __name__ == "__main__":
         "--data-output-dir",
         type=str,
         help="Output directory for collected data"
+    )
+    # Pruner arguments
+    parser.add_argument(
+        "--pruner-mode",
+        type=str,
+        choices=["none", "oracle"],
+        default="none",
+        help="Pruning mode: 'none' (default) or 'oracle' (uses pre-collected labels)",
+    )
+    parser.add_argument(
+        "--oracle-data-path",
+        type=str,
+        default=None,
+        help="Path to directory containing nodes.parquet for oracle pruning",
     )
 
     args = parser.parse_args()
