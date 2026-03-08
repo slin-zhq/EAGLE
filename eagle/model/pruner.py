@@ -488,6 +488,9 @@ class OraclePruner:
             stats["prune_rate"] = stats["nodes_pruned"] / stats["nodes_total"]
         else:
             stats["prune_rate"] = 0.0
+        # Include dry-run stats if present
+        if "nodes_pruned_dry" in stats:
+            stats["prune_rate_dry"] = stats["nodes_pruned_dry"] / max(stats["nodes_total"], 1)
         return stats
 
 
@@ -505,12 +508,18 @@ def prune_draft_tree(
     turn_id: int,
     cycle_idx: int,
     verify: bool = True,
+    dry_run: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Main entry point: get prune mask from the pruner and apply tensor surgery.
 
     Returns the original tensors unchanged if pruner returns None (cache miss)
     or if nothing should be pruned.
+
+    If dry_run=True, computes and logs what WOULD be pruned but returns the
+    original tensors unchanged. This avoids the cascade divergence caused by
+    CUDA non-determinism when the tree_decoding forward pass sees a
+    different-sized tensor after pruning.
     """
     device = draft_tokens.device
     N = draft_tokens.shape[1]
@@ -531,6 +540,14 @@ def prune_draft_tree(
         return draft_tokens, retrieve_indices, tree_mask, tree_position_ids
 
     if not prune_mask.any():
+        return draft_tokens, retrieve_indices, tree_mask, tree_position_ids
+
+    if dry_run:
+        # Record what WOULD be pruned without actually modifying the tree.
+        # This preserves the generation trajectory (identical to unpruned run)
+        # while still computing the theoretical savings.
+        n_pruned = int(prune_mask.sum().item())
+        pruner._stats["nodes_pruned_dry"] = pruner._stats.get("nodes_pruned_dry", 0) + n_pruned
         return draft_tokens, retrieve_indices, tree_mask, tree_position_ids
 
     return rebuild_tensors(

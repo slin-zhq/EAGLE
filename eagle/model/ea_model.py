@@ -86,6 +86,7 @@ class EaModel(nn.Module):
 
         # Pruner (set externally or via from_pretrained; default: no pruning)
         self.pruner = None
+        self.pruner_dry_run = False
 
     def get_tokenizer(self):
         """Get the tokenizer of the base model.
@@ -220,6 +221,7 @@ class EaModel(nn.Module):
             turn_id=turn_id,
             cycle_idx=cycle_idx,
             verify=True,  # enable determinism checks
+            dry_run=getattr(self, 'pruner_dry_run', False),
         )
 
     @torch.no_grad()

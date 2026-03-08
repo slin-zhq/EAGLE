@@ -149,6 +149,9 @@ def get_model_answers(
             bench_name=args.bench_name,
         )
         model.pruner = pruner
+        model.pruner_dry_run = getattr(args, 'pruner_dry_run', False)
+        if model.pruner_dry_run:
+            print(f"[Pruner] DRY-RUN mode: will compute pruning stats without modifying the tree")
         print(f"[Pruner] Oracle pruner loaded from {oracle_data_path}")
     else:
         print(f"[Pruner] No pruner (mode={getattr(args, 'pruner_mode', 'none')})")
@@ -508,6 +511,13 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to directory containing nodes.parquet for oracle pruning",
+    )
+    parser.add_argument(
+        "--pruner-dry-run",
+        action="store_true",
+        default=False,
+        help="Dry-run mode: compute what WOULD be pruned without modifying the tree. "
+             "Avoids cascade divergence from CUDA non-determinism.",
     )
 
     args = parser.parse_args()
